@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Apple Pencil Log Collector</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #f5f5f7;
+        }
+        #header {
+            padding: 10px;
+            background: #fff;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        #canvas {
+            background: white;
+            display: block;
+            margin: 20px auto;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            touch-action: none; /* スクロールなどを防止 */
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 14px;
+            font-weight: bold;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        .btn-clear { background-color: #e3e3e6; color: #333; }
+        .btn-download { background-color: #0071e3; color: white; }
+    </style>
+</head>
+<body>
+
+<div id="header">
+    <span style="font-weight: bold;">手書き軌跡 & 筆圧ログ収集ツール</span>
+    <div>
+        <button class="btn-clear" onclick="clearCanvas()">クリア</button>
+        <button class="btn-download" onclick="downloadCSV()">CSV保存</button>
+    </div>
+</div>
+
+<canvas id="canvas" width="800" height="600"></canvas>
+
+<script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    let logs = []; // データを格納する配列
+    let isDrawing = false;
+    let strokeId = 0; // 画数（ストローク数）
+
+    ctx.strokeStyle = '#000000';
+    ctx.lineCap = 'round';
+
+    // Apple Pencilのイベント（Pointer Events APIを使用）
+    canvas.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'pen') {
+            isDrawing = true;
+            strokeId++;
+            recordLog(e, 'START');
+            ctx.beginPath();
+            ctx.moveTo(e.offsetX, e.offsetY);
+        }
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+        if (isDrawing && e.pointerType === 'pen') {
+            recordLog(e, 'MOVE');
+            // 筆圧に連動して線の太さを変えて描画
+            ctx.lineWidth = e.pressure * 15; 
+            ctx.lineTo(e.offsetX, e.offsetY);
+            ctx.stroke();
+            // 線の継ぎ目を滑らかにする
+            ctx.beginPath();
+            ctx.moveTo(e.offsetX, e.offsetY);
+        }
+    });
+
+    canvas.addEventListener('pointerup', (e) => {
+        if (isDrawing && e.pointerType === 'pen') {
+            recordLog(e, 'END');
+            isDrawing = false;
+            ctx.beginPath();
+        }
+    });
+
+    function recordLog(e, state) {
+        logs.push({
+            stroke_id: strokeId,
+            state: state,
+            x: e.offsetX.toFixed(2),
+            y: e.offsetY.toFixed(2),
+            pressure: e.pressure.toFixed(4),
+            time: e.timeStamp.toFixed(0) // ミリ秒単位の時間
+        });
+    }
+
+    function clearCanvas() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        logs = [];
+        strokeId = 0;
+    }
+
+    function downloadCSV() {
+        if (logs.length === 0) {
+            alert("データがありません。画面にペンやマウスで文字を書いてから保存してください。");
+            return;
+        }
+
+        // CSVのテキストデータを作成
+        let csvContent = "StrokeID,State,X,Y,Pressure,Timestamp\n"; // ヘッダー
+        logs.forEach(log => {
+            csvContent += `${log.stroke_id},${log.state},${log.x},${log.y},${log.pressure},${log.time}\n`;
+        });
+
+        // 確実なダウンロードのためのBlobオブジェクトを作成（文字数制限を回避）
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", `stroke_log_stroke${strokeId}.csv`);
+        
+        document.body.appendChild(link);
+        link.click();
+        
+        // 後片付け
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }
+</script>
+
+</body>
+</html>
