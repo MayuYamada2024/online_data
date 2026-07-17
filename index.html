@@ -50,7 +50,7 @@
             box-shadow: 0 4px 20px rgba(0,0,0,0.08);
             border-radius: 12px;
             border: 1px solid #e3e3e6;
-            touch-action: none;
+            touch-action: none; /* ジェスチャやスクロールのバッティングを防止 */
         }
         .btn-group {
             display: flex;
@@ -76,7 +76,7 @@
 <body>
 
 <div id="header">
-    <span style="font-weight: bold; font-size: 15px;">毛筆軌跡ログ収集ツール (始筆改良版)</span>
+    <span style="font-weight: bold; font-size: 15px;">毛筆軌跡ログ収集ツール (iPad最適化版)</span>
     <div class="btn-group">
         <button class="btn-clear" onclick="clearCurrentCanvas()">クリア</button>
         <button class="btn-next" onclick="nextSession()">次の文字へ</button>
@@ -110,27 +110,34 @@
     ctx.fillStyle = '#000000';
     ctx.strokeStyle = '#000000';
 
-    // 筆の穂先（楕円形状）をスタンプとして描画する関数
+    // iOS/iPadOSのSafariで確実に座標を取得するための関数
+    function getCanvasCoords(e) {
+        const rect = canvas.getBoundingClientRect();
+        // clientX/Y から Canvasの絶対位置を引いて、デバイスピクセル比などはブラウザ側が自動調整する比率に合わせる
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        return { x, y };
+    }
+
+    // 筆の穂先（楕円形状）を描画
     function drawBrushTip(x, y, width) {
+        if (isNaN(x) || isNaN(y) || isNaN(width)) return; // 安全対策
         ctx.save();
         ctx.beginPath();
-        // 書道の筆の入り（斜め45度）を意識して、楕円を少し傾けて描画
-        // 横幅を太さ(width)にし、縦幅をその65%程度に潰すことでリアルな穂先形状を作ります
         ctx.translate(x, y);
-        ctx.rotate(Math.PI / 4); // 45度回転
-        ctx.scale(1, 0.65);     // 楕円に変形
-        ctx.arc(0, 0, width / 2, 0, Math.PI * 2);
+        ctx.rotate(Math.PI / 4); // 45度
+        ctx.scale(1, 0.65);     // 楕円
+        ctx.arc(0, 0, Math.max(width / 2, 0.5), 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
     }
 
-    // 2つのスタンプの間を補間して滑らかに繋ぐ関数
+    // 点と点の間を補間
     function drawSegment(x1, y1, x2, y2, w1, w2) {
         const dx = x2 - x1;
         const dy = y2 - y1;
         const distance = Math.sqrt(dx * dx + dy * dy);
         
-        // 点と点の隙間を埋めるためのステップ数を計算
         const steps = Math.max(Math.floor(distance / 1), 1);
         
         for (let i = 0; i <= steps; i++) {
@@ -144,36 +151,42 @@
 
     // Apple Pencil用 Pointer Events
     canvas.addEventListener('pointerdown', (e) => {
+        // デバッグおよび指でのテスト用にも反応させたい場合は 'pen' 限定を外すことも可能。
+        // ここでは Apple Pencil ('pen') に限定しています。
         if (e.pointerType === 'pen') {
+            e.preventDefault();
             isDrawing = true;
             strokeId++;
             
-            lastX = e.offsetX;
-            lastY = e.offsetY;
+            const coords = getCanvasCoords(e);
+            lastX = coords.x;
+            lastY = coords.y;
             lastTime = performance.now();
             
             // 始筆時の最低保証の太さを設け、丸ではなく筆の入りを作る
             const initialPressure = Math.max(e.pressure, 0.15);
             lastWidth = 4 + initialPressure * 32; 
 
-            recordLog(e, 'START');
+            recordLog(coords.x, coords.y, e.pressure, 'START');
             
-            // 始筆の瞬間をスタンプ描画
+            // 始筆を描画
             drawBrushTip(lastX, lastY, lastWidth);
         }
     });
 
     canvas.addEventListener('pointermove', (e) => {
         if (isDrawing && e.pointerType === 'pen') {
+            e.preventDefault();
+            const coords = getCanvasCoords(e);
             const time = performance.now();
-            const dx = e.offsetX - lastX;
-            const dy = e.offsetY - lastY;
+            const dx = coords.x - lastX;
+            const dy = coords.y - lastY;
             const distance = Math.sqrt(dx * dx + dy * dy);
             const dt = time - lastTime;
             
             const speed = dt > 0 ? distance / dt : 0;
 
-            recordLog(e, 'MOVE');
+            recordLog(coords.x, coords.y, e.pressure, 'MOVE');
 
             // 筆圧と速度から目標の太さを計算
             const targetWidth = calculateWidth(e.pressure, speed);
@@ -181,11 +194,11 @@
             // 太さの変化を滑らかにするフィルター
             const currentWidth = lastWidth * 0.6 + targetWidth * 0.4;
 
-            // 前回の座標から今回の座標まで、筆の穂先スタンプを連続して敷き詰める
-            drawSegment(lastX, lastY, e.offsetX, e.offsetY, lastWidth, currentWidth);
+            // 補間しながら描画
+            drawSegment(lastX, lastY, coords.x, coords.y, lastWidth, currentWidth);
 
-            lastX = e.offsetX;
-            lastY = e.offsetY;
+            lastX = coords.x;
+            lastY = coords.y;
             lastTime = time;
             lastWidth = currentWidth;
         }
@@ -193,7 +206,9 @@
 
     canvas.addEventListener('pointerup', (e) => {
         if (isDrawing && e.pointerType === 'pen') {
-            recordLog(e, 'END');
+            e.preventDefault();
+            const coords = getCanvasCoords(e);
+            recordLog(coords.x, coords.y, e.pressure, 'END');
             isDrawing = false;
         }
     });
@@ -204,15 +219,18 @@
         return baseWidth * speedFactor;
     }
 
-    function recordLog(e, state) {
+    function recordLog(x, y, pressure, state) {
+        // e.timeStamp の不具合対策として Date.now() または performance.now() をミリ秒として使用
+        const timestamp = Math.floor(performance.now());
+        
         allLogs.push({
             session_id: sessionId,
             stroke_id: strokeId,
             state: state,
-            x: e.offsetX.toFixed(2),
-            y: e.offsetY.toFixed(2),
-            pressure: e.pressure.toFixed(4),
-            time: e.timeStamp.toFixed(0)
+            x: x.toFixed(2),
+            y: y.toFixed(2),
+            pressure: pressure.toFixed(4),
+            time: timestamp
         });
         document.getElementById('log-count').innerText = allLogs.length;
     }
@@ -253,4 +271,15 @@
         
         const now = new Date();
         const timeStr = `${now.getMonth()+1}${now.getDate()}_${now.getHours()}${now.getMinutes()}`;
-        link.setAttribute("download", `call
+        link.setAttribute("download", `calligraphy_logs_${sessionId}chars_${timeStr}.csv`);
+        
+        document.body.appendChild(link);
+        link.click();
+        
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }
+</script>
+
+</body>
+</html>
