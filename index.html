@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Apple Pencil Brush Log Collector</title>
+    <title>Apple Pencil Calligraphy Log Collector</title>
     <style>
         body {
             margin: 0;
@@ -50,7 +50,7 @@
             box-shadow: 0 4px 20px rgba(0,0,0,0.08);
             border-radius: 12px;
             border: 1px solid #e3e3e6;
-            touch-action: none; /* 画面スクロールやジェスチャーを完全防止 */
+            touch-action: none;
         }
         .btn-group {
             display: flex;
@@ -76,7 +76,7 @@
 <body>
 
 <div id="header">
-    <span style="font-weight: bold; font-size: 15px;">毛筆軌跡ログ収集ツール</span>
+    <span style="font-weight: bold; font-size: 15px;">毛筆軌跡ログ収集ツール (始筆改良版)</span>
     <div class="btn-group">
         <button class="btn-clear" onclick="clearCurrentCanvas()">クリア</button>
         <button class="btn-next" onclick="nextSession()">次の文字へ</button>
@@ -97,37 +97,69 @@
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
     
-    let allLogs = []; // すべての文字のログを蓄積する配列
+    let allLogs = []; 
     let isDrawing = false;
-    let strokeId = 0; // 現在の文字の中での画数（ストローク数）
-    let sessionId = 1; // 文字（セッション）ID
+    let strokeId = 0; 
+    let sessionId = 1; 
 
-    // 筆ペンの滑らかな描画のための変数
     let lastX = 0;
     let lastY = 0;
     let lastTime = 0;
-    let lastWidth = 5; // 初期値の太さ
+    let lastWidth = 5;
 
+    ctx.fillStyle = '#000000';
     ctx.strokeStyle = '#000000';
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
 
-    // Apple Pencil用のPointer Events
+    // 筆の穂先（楕円形状）をスタンプとして描画する関数
+    function drawBrushTip(x, y, width) {
+        ctx.save();
+        ctx.beginPath();
+        // 書道の筆の入り（斜め45度）を意識して、楕円を少し傾けて描画
+        // 横幅を太さ(width)にし、縦幅をその65%程度に潰すことでリアルな穂先形状を作ります
+        ctx.translate(x, y);
+        ctx.rotate(Math.PI / 4); // 45度回転
+        ctx.scale(1, 0.65);     // 楕円に変形
+        ctx.arc(0, 0, width / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    // 2つのスタンプの間を補間して滑らかに繋ぐ関数
+    function drawSegment(x1, y1, x2, y2, w1, w2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        // 点と点の隙間を埋めるためのステップ数を計算
+        const steps = Math.max(Math.floor(distance / 1), 1);
+        
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const x = x1 + dx * t;
+            const y = y1 + dy * t;
+            const w = w1 + (w2 - w1) * t;
+            drawBrushTip(x, y, w);
+        }
+    }
+
+    // Apple Pencil用 Pointer Events
     canvas.addEventListener('pointerdown', (e) => {
         if (e.pointerType === 'pen') {
             isDrawing = true;
             strokeId++;
             
-            const time = performance.now();
             lastX = e.offsetX;
             lastY = e.offsetY;
-            lastTime = time;
-            lastWidth = calculateWidth(e.pressure, 0); // 最初の太さ
+            lastTime = performance.now();
+            
+            // 始筆時の最低保証の太さを設け、丸ではなく筆の入りを作る
+            const initialPressure = Math.max(e.pressure, 0.15);
+            lastWidth = 4 + initialPressure * 32; 
 
             recordLog(e, 'START');
             
-            ctx.beginPath();
-            ctx.moveTo(lastX, lastY);
+            // 始筆の瞬間をスタンプ描画
+            drawBrushTip(lastX, lastY, lastWidth);
         }
     });
 
@@ -139,26 +171,19 @@
             const distance = Math.sqrt(dx * dx + dy * dy);
             const dt = time - lastTime;
             
-            // 速度（ピクセル/ミリ秒）を計算。dtが0の場合は0とする。
             const speed = dt > 0 ? distance / dt : 0;
 
             recordLog(e, 'MOVE');
 
-            // 筆圧と速度から太さを計算（筆ペンシミュレーション）
+            // 筆圧と速度から目標の太さを計算
             const targetWidth = calculateWidth(e.pressure, speed);
             
-            // 急激な太さの変化を抑え、滑らかに補間する（Low Pass Filter）
-            const currentWidth = lastWidth * 0.7 + targetWidth * 0.3;
+            // 太さの変化を滑らかにするフィルター
+            const currentWidth = lastWidth * 0.6 + targetWidth * 0.4;
 
-            ctx.lineWidth = currentWidth;
-            
-            // 描画処理
-            ctx.beginPath();
-            ctx.moveTo(lastX, lastY);
-            ctx.lineTo(e.offsetX, e.offsetY);
-            ctx.stroke();
+            // 前回の座標から今回の座標まで、筆の穂先スタンプを連続して敷き詰める
+            drawSegment(lastX, lastY, e.offsetX, e.offsetY, lastWidth, currentWidth);
 
-            // 値の更新
             lastX = e.offsetX;
             lastY = e.offsetY;
             lastTime = time;
@@ -173,18 +198,12 @@
         }
     });
 
-    // 筆ペンらしい太さをシミュレートする関数
     function calculateWidth(pressure, speed) {
-        // 基本設定：筆圧が高いほど太くなる（最大30px、最小2px）
-        const baseWidth = 2 + pressure * 28; 
-        
-        // 速度による影響：速く動かすほど細くなる（最大で元の太さの40%まで減少）
-        const speedFactor = Math.max(0.4, 1 - speed * 0.15); 
-        
+        const baseWidth = 3 + pressure * 32; 
+        const speedFactor = Math.max(0.35, 1 - speed * 0.18); 
         return baseWidth * speedFactor;
     }
 
-    // ログの記録
     function recordLog(e, state) {
         allLogs.push({
             session_id: sessionId,
@@ -195,39 +214,33 @@
             pressure: e.pressure.toFixed(4),
             time: e.timeStamp.toFixed(0)
         });
-        
-        // UIの件数表示を更新
         document.getElementById('log-count').innerText = allLogs.length;
     }
 
-    // 現在のキャンバス（表示）のみをリセットする（現在のログは消さない）
     function clearCurrentCanvas() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
 
-    // 「次の文字へ」ボタン：画面をクリアし、セッション番号を進める
     function nextSession() {
         clearCurrentCanvas();
         sessionId++;
-        strokeId = 0; // 新しい文字になるので、画数をリセット
+        strokeId = 0; 
         
         document.getElementById('status-text').innerText = `文字 #${sessionId} を収集中...`;
         document.getElementById('status-text').style.color = '#34c759';
         
-        // 軽い視覚フィードバック
         setTimeout(() => {
             document.getElementById('status-text').style.color = '#0071e3';
         }, 800);
     }
 
-    // CSVの一括ダウンロード
     function downloadAllCSV() {
         if (allLogs.length === 0) {
-            alert("データがありません。画面にペンで文字を書いてから保存してください。");
+            alert("データがありません。");
             return;
         }
 
-        let csvContent = "SessionID,StrokeID,State,X,Y,Pressure,Timestamp\n"; // ヘッダーにSessionIDを追加
+        let csvContent = "SessionID,StrokeID,State,X,Y,Pressure,Timestamp\n";
         allLogs.forEach(log => {
             csvContent += `${log.session_id},${log.stroke_id},${log.state},${log.x},${log.y},${log.pressure},${log.time}\n`;
         });
@@ -238,18 +251,6 @@
         const link = document.createElement("a");
         link.setAttribute("href", url);
         
-        // ファイル名に合計文字数（セッション数）とタイムスタンプを含める
         const now = new Date();
         const timeStr = `${now.getMonth()+1}${now.getDate()}_${now.getHours()}${now.getMinutes()}`;
-        link.setAttribute("download", `brush_logs_total_${sessionId}chars_${timeStr}.csv`);
-        
-        document.body.appendChild(link);
-        link.click();
-        
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-    }
-</script>
-
-</body>
-</html>
+        link.setAttribute("download", `call
