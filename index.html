@@ -3,86 +3,166 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Apple Pencil Log Collector</title>
+    <title>Apple Pencil Brush Log Collector</title>
     <style>
         body {
             margin: 0;
-            overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            padding: 0;
             background-color: #f5f5f7;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
         }
         #header {
-            padding: 10px;
+            width: 100%;
+            max-width: 600px;
+            padding: 12px 20px;
             background: #fff;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            box-sizing: border-box;
+            border-bottom-left-radius: 8px;
+            border-bottom-right-radius: 8px;
+        }
+        #info-panel {
+            font-size: 13px;
+            color: #666;
+            margin: 10px 0 2px 0;
+            text-align: center;
+        }
+        #canvas-container {
+            flex-grow: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+            padding: 10px;
+            box-sizing: border-box;
         }
         #canvas {
             background: white;
             display: block;
-            margin: 20px auto;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-            border-radius: 8px;
-            touch-action: none; /* スクロールなどを防止 */
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            border-radius: 12px;
+            border: 1px solid #e3e3e6;
+            touch-action: none; /* 画面スクロールやジェスチャーを完全防止 */
+        }
+        .btn-group {
+            display: flex;
+            gap: 8px;
         }
         button {
-            padding: 10px 20px;
-            font-size: 14px;
-            font-weight: bold;
+            padding: 10px 16px;
+            font-size: 13px;
+            font-weight: 600;
             border: none;
-            border-radius: 6px;
+            border-radius: 8px;
             cursor: pointer;
-            margin-left: 10px;
+            transition: background 0.2s;
         }
         .btn-clear { background-color: #e3e3e6; color: #333; }
+        .btn-clear:active { background-color: #d2d2d6; }
+        .btn-next { background-color: #34c759; color: white; }
+        .btn-next:active { background-color: #28a745; }
         .btn-download { background-color: #0071e3; color: white; }
+        .btn-download:active { background-color: #005bb5; }
     </style>
 </head>
 <body>
 
 <div id="header">
-    <span style="font-weight: bold;">手書き軌跡 & 筆圧ログ収集ツール</span>
-    <div>
-        <button class="btn-clear" onclick="clearCanvas()">クリア</button>
-        <button class="btn-download" onclick="downloadCSV()">CSV保存</button>
+    <span style="font-weight: bold; font-size: 15px;">毛筆軌跡ログ収集ツール</span>
+    <div class="btn-group">
+        <button class="btn-clear" onclick="clearCurrentCanvas()">クリア</button>
+        <button class="btn-next" onclick="nextSession()">次の文字へ</button>
+        <button class="btn-download" onclick="downloadAllCSV()">CSV一括保存</button>
     </div>
 </div>
 
-<canvas id="canvas" width="800" height="600"></canvas>
+<div id="info-panel">
+    現在のステータス: <span id="status-text" style="font-weight: bold; color: #0071e3;">文字 #1 を収集中...</span> 
+    (蓄積データ: <span id="log-count">0</span> 行)
+</div>
+
+<div id="canvas-container">
+    <canvas id="canvas" width="500" height="500"></canvas>
+</div>
 
 <script>
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
-    let logs = []; // データを格納する配列
+    
+    let allLogs = []; // すべての文字のログを蓄積する配列
     let isDrawing = false;
-    let strokeId = 0; // 画数（ストローク数）
+    let strokeId = 0; // 現在の文字の中での画数（ストローク数）
+    let sessionId = 1; // 文字（セッション）ID
+
+    // 筆ペンの滑らかな描画のための変数
+    let lastX = 0;
+    let lastY = 0;
+    let lastTime = 0;
+    let lastWidth = 5; // 初期値の太さ
 
     ctx.strokeStyle = '#000000';
     ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
 
-    // Apple Pencilのイベント（Pointer Events APIを使用）
+    // Apple Pencil用のPointer Events
     canvas.addEventListener('pointerdown', (e) => {
         if (e.pointerType === 'pen') {
             isDrawing = true;
             strokeId++;
+            
+            const time = performance.now();
+            lastX = e.offsetX;
+            lastY = e.offsetY;
+            lastTime = time;
+            lastWidth = calculateWidth(e.pressure, 0); // 最初の太さ
+
             recordLog(e, 'START');
+            
             ctx.beginPath();
-            ctx.moveTo(e.offsetX, e.offsetY);
+            ctx.moveTo(lastX, lastY);
         }
     });
 
     canvas.addEventListener('pointermove', (e) => {
         if (isDrawing && e.pointerType === 'pen') {
+            const time = performance.now();
+            const dx = e.offsetX - lastX;
+            const dy = e.offsetY - lastY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const dt = time - lastTime;
+            
+            // 速度（ピクセル/ミリ秒）を計算。dtが0の場合は0とする。
+            const speed = dt > 0 ? distance / dt : 0;
+
             recordLog(e, 'MOVE');
-            // 筆圧に連動して線の太さを変えて描画
-            ctx.lineWidth = e.pressure * 15; 
+
+            // 筆圧と速度から太さを計算（筆ペンシミュレーション）
+            const targetWidth = calculateWidth(e.pressure, speed);
+            
+            // 急激な太さの変化を抑え、滑らかに補間する（Low Pass Filter）
+            const currentWidth = lastWidth * 0.7 + targetWidth * 0.3;
+
+            ctx.lineWidth = currentWidth;
+            
+            // 描画処理
+            ctx.beginPath();
+            ctx.moveTo(lastX, lastY);
             ctx.lineTo(e.offsetX, e.offsetY);
             ctx.stroke();
-            // 線の継ぎ目を滑らかにする
-            ctx.beginPath();
-            ctx.moveTo(e.offsetX, e.offsetY);
+
+            // 値の更新
+            lastX = e.offsetX;
+            lastY = e.offsetY;
+            lastTime = time;
+            lastWidth = currentWidth;
         }
     });
 
@@ -90,51 +170,82 @@
         if (isDrawing && e.pointerType === 'pen') {
             recordLog(e, 'END');
             isDrawing = false;
-            ctx.beginPath();
         }
     });
 
+    // 筆ペンらしい太さをシミュレートする関数
+    function calculateWidth(pressure, speed) {
+        // 基本設定：筆圧が高いほど太くなる（最大30px、最小2px）
+        const baseWidth = 2 + pressure * 28; 
+        
+        // 速度による影響：速く動かすほど細くなる（最大で元の太さの40%まで減少）
+        const speedFactor = Math.max(0.4, 1 - speed * 0.15); 
+        
+        return baseWidth * speedFactor;
+    }
+
+    // ログの記録
     function recordLog(e, state) {
-        logs.push({
+        allLogs.push({
+            session_id: sessionId,
             stroke_id: strokeId,
             state: state,
             x: e.offsetX.toFixed(2),
             y: e.offsetY.toFixed(2),
             pressure: e.pressure.toFixed(4),
-            time: e.timeStamp.toFixed(0) // ミリ秒単位の時間
+            time: e.timeStamp.toFixed(0)
         });
+        
+        // UIの件数表示を更新
+        document.getElementById('log-count').innerText = allLogs.length;
     }
 
-    function clearCanvas() {
+    // 現在のキャンバス（表示）のみをリセットする（現在のログは消さない）
+    function clearCurrentCanvas() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        logs = [];
-        strokeId = 0;
     }
 
-    function downloadCSV() {
-        if (logs.length === 0) {
-            alert("データがありません。画面にペンやマウスで文字を書いてから保存してください。");
+    // 「次の文字へ」ボタン：画面をクリアし、セッション番号を進める
+    function nextSession() {
+        clearCurrentCanvas();
+        sessionId++;
+        strokeId = 0; // 新しい文字になるので、画数をリセット
+        
+        document.getElementById('status-text').innerText = `文字 #${sessionId} を収集中...`;
+        document.getElementById('status-text').style.color = '#34c759';
+        
+        // 軽い視覚フィードバック
+        setTimeout(() => {
+            document.getElementById('status-text').style.color = '#0071e3';
+        }, 800);
+    }
+
+    // CSVの一括ダウンロード
+    function downloadAllCSV() {
+        if (allLogs.length === 0) {
+            alert("データがありません。画面にペンで文字を書いてから保存してください。");
             return;
         }
 
-        // CSVのテキストデータを作成
-        let csvContent = "StrokeID,State,X,Y,Pressure,Timestamp\n"; // ヘッダー
-        logs.forEach(log => {
-            csvContent += `${log.stroke_id},${log.state},${log.x},${log.y},${log.pressure},${log.time}\n`;
+        let csvContent = "SessionID,StrokeID,State,X,Y,Pressure,Timestamp\n"; // ヘッダーにSessionIDを追加
+        allLogs.forEach(log => {
+            csvContent += `${log.session_id},${log.stroke_id},${log.state},${log.x},${log.y},${log.pressure},${log.time}\n`;
         });
 
-        // 確実なダウンロードのためのBlobオブジェクトを作成（文字数制限を回避）
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         
         const link = document.createElement("a");
         link.setAttribute("href", url);
-        link.setAttribute("download", `stroke_log_stroke${strokeId}.csv`);
+        
+        // ファイル名に合計文字数（セッション数）とタイムスタンプを含める
+        const now = new Date();
+        const timeStr = `${now.getMonth()+1}${now.getDate()}_${now.getHours()}${now.getMinutes()}`;
+        link.setAttribute("download", `brush_logs_total_${sessionId}chars_${timeStr}.csv`);
         
         document.body.appendChild(link);
         link.click();
         
-        // 後片付け
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
     }
